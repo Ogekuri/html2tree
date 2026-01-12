@@ -4,20 +4,19 @@
 
 ### Alpha Stage
 #### Todo List ✓
-- [x] new: Initial alpha stage release
-- [ ] new: Develop ??
-- [ ] test: Testing and bug fixes
-- [ ] new: Testing and bug fixes
-- [ ] new: Beta stage release
+- [x] new: Initial commit.
+- [ ] new: Initial alpha stage release.
+- [ ] test: Testing and bug fixes.
+- [ ] new: Beta stage release.
 
 ### Beta Stage
 
 #### Todo List ✓
-- [ ] test: Resting and bug fixes
-- [ ] new: Release RC stage version
+- [ ] test: Resting and bug fixes.
+- [ ] new: Release RC stage version.
 
 ### Release Candidate Stage
 
 #### Todo List ✓
-- [x] docs: Check documentation
-- [ ] new: Release version 0.1.0
+- [ ] docs: Check documentation.
+- [ ] new: Release version 0.1.0.
