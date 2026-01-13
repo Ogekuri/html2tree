@@ -6,12 +6,224 @@
 
 Convert HTML file into markdown tree usable with LLM agent.
 
-Suitable HTML file can downloader with [HtmlDownloder](https://github.com/Ogekuri/HtmlDownloader).
+Suitable HTML file can be downloaded with [HtmlDownloader](https://github.com/Ogekuri/HtmlDownloader).
 
+## Installation
 
-TODO: write this section.
+Install html2tree using uv:
+
+```bash
+uv tool install html2tree --from git+https://github.com/Ogekuri/html2tree.git
+```
+
+To upgrade to the latest version:
+
+```bash
+html2tree --upgrade
+```
+
+To uninstall:
+
+```bash
+html2tree --uninstall
+```
+
+## Usage
+
+### Basic Command Structure
+
+```bash
+html2tree --from-dir FROM_DIR --to-dir TO_DIR [options]
+```
+
+### Required Arguments
+
+- `--from-dir FROM_DIR`: Source project directory containing:
+  - `document.html` - Main HTML document to convert
+  - `toc.html` - Table of contents HTML file
+  - `assets/` - Directory containing images and other assets
+
+- `--to-dir TO_DIR`: Output directory where converted files will be saved
+  - Must be empty (unless using `--post-processing-only`)
+  - Will contain the generated Markdown, JSON manifest, assets, and tables
+
+### Basic Example
+
+```bash
+html2tree --from-dir ./my-html-project --to-dir ./output
+```
+
+This will convert the HTML files in `./my-html-project` to Markdown format in `./output`.
+
+### Information Commands
+
+```bash
+# Display help information
+html2tree --help
+
+# Display version
+html2tree --version
+# or
+html2tree --ver
+
+# Upgrade to latest version
+html2tree --upgrade
+
+# Uninstall html2tree
+html2tree --uninstall
+```
+
+## Post-Processing Options
+
+### Basic Post-Processing
+
+```bash
+# Convert HTML and run post-processing
+html2tree --from-dir ./source --to-dir ./output --post-processing
+
+# Run post-processing only on existing output
+html2tree --from-dir ./source --to-dir ./output --post-processing-only
+```
+
+### Equation Processing (Pix2Tex)
+
+```bash
+# Enable Pix2Tex equation extraction during post-processing
+html2tree --from-dir ./source --to-dir ./output --post-processing --enable-pic2tex
+
+# Set minimum formula length for Pix2Tex (default: 5)
+html2tree --from-dir ./source --to-dir ./output --post-processing --enable-pic2tex --equation-min-len 10
+
+# Disable Pix2Tex even if --enable-pic2tex was specified
+html2tree --from-dir ./source --to-dir ./output --post-processing --enable-pic2tex --disable-pic2tex
+```
+
+### Image Processing
+
+```bash
+# Set minimum image dimensions for removal (default: 100x100)
+html2tree --from-dir ./source --to-dir ./output --min-size-x 150 --min-size-y 150
+
+# Disable removal of small images
+html2tree --from-dir ./source --to-dir ./output --disable-remove-small-images
+```
+
+### Gemini AI Annotation
+
+The tool can use Google's Gemini API to annotate images and equations:
+
+```bash
+# Annotate images (enabled by default when post-processing is active)
+html2tree --from-dir ./source --to-dir ./output --post-processing --gemini-api-key YOUR_API_KEY
+
+# Disable image annotation
+html2tree --from-dir ./source --to-dir ./output --post-processing --disable-annotate-images
+
+# Enable equation annotation (disabled by default)
+html2tree --from-dir ./source --to-dir ./output --post-processing --enable-annotate-equations --gemini-api-key YOUR_API_KEY
+
+# Use a specific Gemini model
+html2tree --from-dir ./source --to-dir ./output --post-processing --gemini-model gemini-1.5-pro --gemini-api-key YOUR_API_KEY
+
+# Use environment variable for API key
+export GEMINI_API_KEY=your_api_key_here
+html2tree --from-dir ./source --to-dir ./output --post-processing
+```
+
+### Custom Prompts
+
+```bash
+# Use custom prompts for Gemini annotation
+html2tree --from-dir ./source --to-dir ./output --post-processing --prompts ./custom_prompts.json --gemini-api-key YOUR_API_KEY
+
+# Write default prompts to a file for customization
+html2tree --write-prompts ./my_prompts.json
+```
+
+The prompts JSON file should contain:
+- `prompt_equation`: Prompt for equation images
+- `prompt_non_equation`: Prompt for non-equation images
+- `prompt_uncertain`: Prompt for uncertain cases
+
+### Table of Contents and Cleanup
+
+```bash
+# Disable TOC insertion
+html2tree --from-dir ./source --to-dir ./output --post-processing --disable-toc
+
+# Disable cleanup step (preserve page markers)
+html2tree --from-dir ./source --to-dir ./output --post-processing --disable-cleanup
+
+# Keep PDF page references in manifest
+html2tree --from-dir ./source --to-dir ./output --post-processing --enable-pdf-pages-ref
+```
+
+### Logging and Debugging
+
+```bash
+# Enable verbose logging
+html2tree --from-dir ./source --to-dir ./output --verbose
+
+# Enable debug mode (includes extra artifacts)
+html2tree --from-dir ./source --to-dir ./output --debug
+```
+
+## Complete Example
+
+Here's a comprehensive example using multiple options:
+
+```bash
+html2tree \
+  --from-dir ./html-project \
+  --to-dir ./markdown-output \
+  --post-processing \
+  --enable-pic2tex \
+  --equation-min-len 8 \
+  --gemini-api-key YOUR_API_KEY \
+  --gemini-model gemini-1.5-pro \
+  --enable-annotate-equations \
+  --min-size-x 120 \
+  --min-size-y 120 \
+  --verbose
+```
+
+This command will:
+1. Convert HTML from `./html-project` to Markdown in `./markdown-output`
+2. Run post-processing pipeline
+3. Enable Pix2Tex for equation extraction (minimum length 8)
+4. Use Gemini API to annotate both images and equations
+5. Remove images smaller than 120x120 pixels
+6. Show verbose progress logs
+
+## Output Structure
+
+After conversion, the output directory will contain:
+
+- `document.md` - Main converted Markdown file
+- `document.md.processing.md` - Backup of Markdown before post-processing
+- `document.json` - JSON manifest with metadata about tables and images
+- `document.toc` - Table of contents (when post-processing is enabled)
+- `assets/` - Copied asset files (images, etc.)
+- `tables/` - Extracted tables in Markdown and CSV formats
+
+## Exit Codes
+
+- `0` - Success
+- `2` - Unknown command-line arguments
+- `6` - Invalid arguments or missing required files
+- `7` - Output directory errors
+- `9` - Post-processing-only mode errors
+- `10` - Post-processing failures or TOC mismatches
 
 ## Feature Highlights
-TODO: write this section.
+
+- **HTML to Markdown Conversion**: Convert complex HTML documents to clean, structured Markdown
+- **Table Extraction**: Automatically extract tables to separate Markdown and CSV files
+- **Image Processing**: Copy assets and optionally remove small images
+- **Equation Support**: Extract mathematical equations using Pix2Tex (optional)
+- **AI Annotation**: Use Google Gemini to annotate images and equations (optional)
+- **Table of Contents**: Generate TOC from HTML structure
+- **Flexible Post-Processing**: Modular pipeline for cleanup and enrichment
+- **Comprehensive Logging**: Verbose and debug modes for troubleshooting
 
 
