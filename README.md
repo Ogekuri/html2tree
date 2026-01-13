@@ -4,7 +4,10 @@
 
 # html2tree (0.0.1)
 
-Convert HTML (HtmlDownloder) file into markdown tree usable with LLM agent
+Convert HTML file into markdown tree usable with LLM agent.
+
+Suitable HTML file can downloader with [HtmlDownloder](https://github.com/Ogekuri/HtmlDownloader).
+
 
 TODO: write this section.
 

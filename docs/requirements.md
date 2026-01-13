@@ -1,8 +1,8 @@
 ---
 title: "Requisiti html2tree"
 description: Specifica dei requisiti software
-version: "0.2"
-date: "2026-01-12"
+version: "0.4"
+date: "2026-01-13"
 author: "Codex CLI"
 scope:
   paths:
@@ -18,9 +18,9 @@ tags: ["markdown", "requisiti", "bozza"]
 ---
 
 # Requisiti html2tree
-**Versione**: 0.2
-**Autore**: Codex CLI  
-**Data**: 2026-01-12
+**Versione**: 0.4
+**Autore**: Codex CLI
+**Data**: 2026-01-13
 
 ## Indice
 <!-- TOC -->
@@ -80,6 +80,9 @@ html2tree e una applicazione CLI Python per la gestione di comandi informativi e
 ### 2.3 Componenti e librerie richieste
 - **CTN-007**: Il progetto deve dipendere dai pacchetti `build`, `setuptools`, `wheel`, `pytest` in `requirements.txt`.
 - **CTN-008**: Il progetto deve integrare `uv`/`uvx` per installazione ed esecuzione live.
+- **CTN-009**: Il progetto deve includere `markdownify` tra le dipendenze runtime.
+- **CTN-010**: Il progetto deve includere `beautifulsoup4` tra le dipendenze runtime.
+- **CTN-011**: Il progetto deve includere `pillow`, `matplotlib`, `pylatexenc` tra le dipendenze runtime.
 
 ## 3. Requisiti
 
@@ -125,6 +128,15 @@ html2tree/
 - **REQ-011**: Lo script `venv.sh` deve verificare se esiste `.venv`, rimuoverla se presente, creare un nuovo ambiente e installare tutte le dipendenze di `requirements.txt`.
 - **REQ-012**: Lo script `tests.sh` deve eseguire tutti gli unit test implementati.
 - **REQ-013**: Lo script `html2tree.sh` deve eseguire il programma passando tutti gli argomenti ricevuti dalla riga di comando.
+- **REQ-014**: L'opzione `--from-dir` deve accettare una directory sorgente contenente `document.html`, `toc.html` e `assets/`, mentre `--to-dir` deve impostare la directory di output.
+- **REQ-015**: La CLI deve convertire `document.html` in Markdown tramite `markdownify` e salvare `<document>.md` e `<document>.md.processing.md` nell'output.
+- **REQ-016**: La CLI deve generare un manifest JSON con le chiavi `markdown`, `tables`, `images` e percorsi relativi agli artefatti.
+- **REQ-017**: La CLI deve copiare gli asset immagine dalla sorgente in `assets/` dell'output e aggiornare i link nel Markdown.
+- **REQ-018**: Per ogni tabella HTML identificata la CLI deve creare in `tables/` un file `.md` e un file `.csv`; nel file `document.md` deve essere inserito sia il contenuto della tabella in formato Markdown sia i riferimenti ai file esportati (`tables/<nome>.md` e `tables/<nome>.csv`).
+- **REQ-019**: Le opzioni `--post-processing` e `--post-processing-only` devono attivare la pipeline di post-processing con le stesse fasi di `pdf2tree`.
+- **REQ-020**: L'opzione `--post-processing-only` deve ripristinare il Markdown dal file `.processing.md` e rigenerare manifest e `.toc`.
+- **REQ-021**: I flag `--enable-pic2tex`, `--equation-min-len`, `--disable-cleanup`, `--disable-toc`, `--disable-annotate-images`, `--enable-annotate-equations`, `--gemini-api-key`, `--gemini-model`, `--prompts`, `--write-prompts` devono essere supportati con la stessa semantica di `pdf2tree`.
+- **REQ-022**: Se l'annotazione e abilitata, la CLI deve richiedere una chiave Gemini valida e terminare con errore in assenza.
 
 ## 4. Requisiti di test
 
@@ -136,10 +148,15 @@ html2tree/
 | **TST-004**          | **REQ-006**                     | Simulare `--uninstall` con mocking della chiamata a `uv` e verificare che non venga eseguita una disinstallazione reale. |
 | **TST-005**          | **REQ-007**, **REQ-008**, **REQ-009**, **REQ-010** | Simulare risposte API per versione uguale, maggiore e errore di rete; verificare comportamento e messaggio atteso. |
 | **TST-006**          | **DES-007**                     | Eseguire `pytest` e verificare che i test coprano `--version`, `--help`, `--upgrade` e `--uninstall` con mocking di `uv` e il controllo versione online con risposte simulate. |
+| **TST-007**          | **REQ-014**, **REQ-015**, **REQ-016**, **REQ-017**, **REQ-018** | Convertire `html_sample/` in una directory temporanea e verificare la creazione di Markdown, manifest JSON, `assets/` e `tables/` con file `.md` e `.csv`. |
+| **TST-008**          | **REQ-019**, **REQ-020**         | Eseguire `--post-processing-only` su un output esistente e verificare l'aggiornamento di Markdown e manifest. |
+| **TST-009**          | **REQ-021**                      | Eseguire `--write-prompts` e `--prompts`, verificando che il file contenga i tre prompt richiesti e che la CLI li accetti. |
 
 ## 5. Cronologia delle revisioni
 
 | Data | Versione | Motivo e descrizione del cambiamento |
 |------|----------|--------------------------------------|
+| 2026-01-13 | 0.4 | Aggiornato REQ-018: il file document.md deve contenere sia il contenuto della tabella in formato Markdown sia i riferimenti ai file esportati. |
+| 2026-01-12 | 0.3 | Aggiunti requisiti per conversione HTML, post-processing e dipendenze runtime. |
 | 2026-01-12 | 0.2 | Aggiunti requisiti per i test unitari della CLI. |
 | 2026-01-12 | 0.1 | Bozza iniziale dei requisiti. |

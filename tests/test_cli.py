@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 import html2tree.cli as cli
 
 
@@ -100,3 +103,67 @@ def test_online_check_silent_on_api_failure(monkeypatch, capsys):
     cli._check_latest_version()
     out = capsys.readouterr().out
     assert out == ""
+
+
+def test_convert_html_creates_outputs(monkeypatch, tmp_path):
+    _suppress_online_check(monkeypatch)
+    source_dir = Path(__file__).resolve().parents[1] / "html_sample"
+    out_dir = tmp_path / "out"
+
+    result = cli.main(["--from-dir", str(source_dir), "--to-dir", str(out_dir)])
+    assert result == 0
+
+    md_path = out_dir / "document.md"
+    assert md_path.exists()
+    backup_path = md_path.with_suffix(md_path.suffix + ".processing.md")
+    assert backup_path.exists()
+
+    manifest_path = out_dir / "document.json"
+    assert manifest_path.exists()
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert set(manifest.keys()) >= {"markdown", "tables", "images"}
+
+    assets_dir = out_dir / "assets"
+    assert assets_dir.exists()
+    assert any(p.is_file() for p in assets_dir.rglob("*"))
+
+    tables_dir = out_dir / "tables"
+    assert any(tables_dir.glob("*.md"))
+    assert any(tables_dir.glob("*.csv"))
+
+
+def test_post_processing_only_runs(monkeypatch, tmp_path):
+    _suppress_online_check(monkeypatch)
+    monkeypatch.setenv("HTML2TREE_TEST_MODE", "1")
+    source_dir = Path(__file__).resolve().parents[1] / "html_sample"
+    out_dir = tmp_path / "out"
+
+    result = cli.main(["--from-dir", str(source_dir), "--to-dir", str(out_dir)])
+    assert result == 0
+
+    result = cli.main(
+        [
+            "--from-dir",
+            str(source_dir),
+            "--to-dir",
+            str(out_dir),
+            "--post-processing-only",
+            "--disable-annotate-images",
+        ]
+    )
+    assert result == 0
+
+    md_path = out_dir / "document.md"
+    toc_path = md_path.with_suffix(".toc")
+    assert toc_path.exists()
+
+
+def test_write_prompts_file(monkeypatch, tmp_path):
+    _suppress_online_check(monkeypatch)
+    prompts_path = tmp_path / "prompts.json"
+
+    result = cli.main(["--write-prompts", str(prompts_path)])
+    assert result == 0
+
+    data = json.loads(prompts_path.read_text(encoding="utf-8"))
+    assert set(data.keys()) == {"prompt_equation", "prompt_non_equation", "prompt_uncertain"}
