@@ -1,3 +1,3 @@
 """Version information for html2tree."""
 
-__version__ = "0.0.2"
+__version__ = "0.0.3"
