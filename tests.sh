@@ -29,17 +29,16 @@ if ! [ -d "${VENVDIR}/" ]; then
   virtualenv --python=python3 ${VENVDIR}/ >/dev/null
   echo "done."
 
-  # Installa i requisiti Python
-  source ${VENVDIR}/bin/activate
-
-  echo -n "Install python requirements ..."
-  ${VENVDIR}/bin/pip install -r "${SCRIPT_PATH}/requirements.txt" >/dev/null
-  ${VENVDIR}/bin/playwright install chromium
-  echo "done." 
-else
-  # echo "Ambiente virtuale trovato."
-  source ${VENVDIR}/bin/activate
-fi
+	  # Installa i requisiti Python
+	  source ${VENVDIR}/bin/activate
+	
+	  echo -n "Install python requirements ..."
+	  ${VENVDIR}/bin/pip install -r "${SCRIPT_PATH}/requirements.txt" >/dev/null
+	  echo "done." 
+	else
+	  # echo "Ambiente virtuale trovato."
+	  source ${VENVDIR}/bin/activate
+	fi
 
 # Esegue i test in 2 fasi:
 # 1) Suite standard

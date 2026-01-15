@@ -33,6 +33,8 @@
 !tech/**/*
 !tests/
 !tests/**/*
+!html_sample/
+!html_sample/**/*
 
 ##########################################
 # Exlucde specific files and directories #

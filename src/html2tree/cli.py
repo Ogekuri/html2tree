@@ -126,7 +126,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--enable-pdf-pages-ref",
         action="store_true",
-        help="Keep pdf_source_page fields in the final manifest instead of removing them during cleanup",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--disable-cleanup",
@@ -343,7 +343,8 @@ def main(argv: list[str] | None = None) -> int:
         disable_remove_small_images=bool(args.disable_remove_small_images),
         disable_cleanup=bool(args.disable_cleanup),
         disable_toc=bool(args.disable_toc),
-        enable_pdf_pages_ref=bool(args.enable_pdf_pages_ref),
+        # `enable_pdf_pages_ref` removed: always use context-based metadata
+        enable_pdf_pages_ref=False,
         min_size_x=int(args.min_size_x),
         min_size_y=int(args.min_size_y),
         prompt_equation=prompts_cfg["prompt_equation"],
@@ -392,6 +393,7 @@ def main(argv: list[str] | None = None) -> int:
             from_dir=from_dir,
             out_dir=to_dir,
             post_processing_cfg=post_processing_cfg,
+            generate_post_artifacts=post_processing_active,
         )
     except RuntimeError as exc:
         print(str(exc), file=sys.stderr)

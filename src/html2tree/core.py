@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import importlib
 import json
 import logging
@@ -361,6 +362,17 @@ def normalize_path_for_md(p: str) -> str:
     return p
 
 
+def _split_markdown_link(content: str) -> Tuple[str, Optional[str]]:
+    """Splits the content inside (...) of a Markdown link into (url, title)."""
+    content = content.strip()
+    match = re.search(r'\s+(".*?"|\'.*?\')$', content, re.DOTALL)
+    if match:
+        title = match.group(1)
+        url = content[: match.start()].strip()
+        return url, title
+    return content, None
+
+
 def relative_to_output(path: Path, out_dir: Path) -> str:
     try:
         return str(path.resolve().relative_to(out_dir.resolve()))
@@ -432,7 +444,7 @@ def serialize_toc_tree(node: TocNode) -> List[Dict[str, Any]]:
     return [
         {
             "title": child.title,
-            "pdf_source_page": child.page,
+            # pdf_source_page removed: rely on context_path/context for localization
             "anchor": child.anchor,
             "children": serialize_toc_tree(child),
         }
@@ -547,6 +559,8 @@ def guess_page_from_filename(name: str) -> Optional[int]:
 
 IMG_LINK_RE = re.compile(r"(!\[[^\]]*\]\()([^\)]+)(\))")
 
+MULTILINE_IMG_RE = re.compile(r"!\[[^\]]*\]\([^)]+(?:\s+\"[^\"]*\")?\)", re.DOTALL)
+
 
 CAPTION_RE = re.compile(r"(?m)^(Figura\s+\d+(\.\d+)?\s*:.*)$")
 PJM_PLACEHOLDER_RE = re.compile(
@@ -579,8 +593,8 @@ PAGE_END_MARKER_CAPTURE_RE = re.compile(r"^\s*---\s*end of page\.page_number=(\d
 def extract_image_basenames_from_markdown(md: str) -> Set[str]:
     out: Set[str] = set()
     for match in IMG_LINK_RE.finditer(md or ""):
-        url = match.group(2).strip().strip('"').strip("'")
-        url = normalize_path_for_md(url)
+        url_part, _ = _split_markdown_link(match.group(2))
+        url = normalize_path_for_md(url_part)
         url = url.split("?", 1)[0].split("#", 1)[0]
         base = url.split("/")[-1].strip()
         if base:
@@ -591,8 +605,8 @@ def extract_image_basenames_from_markdown(md: str) -> Set[str]:
 def extract_image_basenames_in_order(md: str) -> List[str]:
     ordered: List[str] = []
     for match in IMG_LINK_RE.finditer(md or ""):
-        url = match.group(2).strip().strip('"').strip("'")
-        url = normalize_path_for_md(url)
+        url_part, _ = _split_markdown_link(match.group(2))
+        url = normalize_path_for_md(url_part)
         url = url.split("?", 1)[0].split("#", 1)[0]
         base = url.split("/")[-1].strip()
         if base:
@@ -602,8 +616,9 @@ def extract_image_basenames_in_order(md: str) -> List[str]:
 
 def rewrite_image_links_to_assets_subdir(md: str, subdir: str = "assets") -> str:
     def repl(match: re.Match) -> str:
-        before, url, after = match.group(1), match.group(2), match.group(3)
-        url_clean = normalize_path_for_md(url.strip().strip('"').strip("'"))
+        before, content, after = match.group(1), match.group(2), match.group(3)
+        url, title = _split_markdown_link(content)
+        url_clean = normalize_path_for_md(url)
         url_clean = url_clean.split("?", 1)[0].split("#", 1)[0]
         rel = ""
         if "/assets/" in f"/{url_clean}":
@@ -614,9 +629,29 @@ def rewrite_image_links_to_assets_subdir(md: str, subdir: str = "assets") -> str
         else:
             rel = url_clean.split("/")[-1]
         rel = rel.lstrip("/")
-        return f"{before}{subdir}/{rel}{after}"
+        new_url = f"{subdir}/{rel}"
+        if title:
+            return f"{before}{new_url} {title}{after}"
+        return f"{before}{new_url}{after}"
 
     return IMG_LINK_RE.sub(repl, md)
+
+
+def sanitize_image_links(md: str) -> str:
+    """Normalize multi-line image links produced by markdownify.
+
+    When HTML <img> tags contain alt or title attributes with embedded
+    newlines, markdownify may produce malformed Markdown image syntax
+    spanning multiple lines. This function collapses such occurrences
+    into single-line image links.
+    """
+    def fix_match(m: re.Match) -> str:
+        raw = m.group(0)
+        # Collapse any internal whitespace (including newlines) to single spaces
+        fixed = re.sub(r"\s+", " ", raw)
+        return fixed
+
+    return MULTILINE_IMG_RE.sub(fix_match, md)
 
 
 def _sanitize_table_cell(text: str) -> str:
@@ -683,19 +718,43 @@ def replace_table_placeholders(md_text: str, tables: List[HtmlTable]) -> str:
     if not tables:
         return md_text
 
-    table_by_placeholder = {table.placeholder: table for table in tables}
+    def _placeholder_pattern(placeholder: str) -> re.Pattern[str]:
+        # Allow optional backslashes before underscores introduced by markdown escaping
+        parts: List[str] = []
+        for ch in placeholder:
+            if ch == "_":
+                parts.append(r"\\?_")
+            else:
+                parts.append(re.escape(ch))
+        return re.compile("".join(parts))
+
+    patterns: List[Tuple[re.Pattern[str], HtmlTable]] = [
+        (_placeholder_pattern(table.placeholder), table) for table in tables
+    ]
+
     lines = md_text.splitlines()
     output: List[str] = []
 
     for line in lines:
         stripped = line.strip()
-        table = table_by_placeholder.get(stripped)
-        if table is None:
+        matched_table: Optional[HtmlTable] = None
+        for pattern, table in patterns:
+            if pattern.search(stripped):
+                matched_table = table
+                break
+
+        if matched_table is None:
             output.append(line)
             continue
-        if table.md:
-            output.append(table.md)
-        ref_lines = [f"[Markdown](tables/{table.stem}.md)", "", f"[CSV](tables/{table.stem}.csv)"]
+
+        if matched_table.md:
+            output.append(matched_table.md)
+
+        ref_lines = [
+            f"[Markdown](tables/{matched_table.stem}.md)",
+            "",
+            f"[CSV](tables/{matched_table.stem}.csv)",
+        ]
         output.append("")
         output.append("\n".join(ref_lines).strip())
         output.append("")
@@ -767,6 +826,8 @@ def _normalize_title_for_toc(title: str) -> str:
     norm = norm.replace("\u2019", "'").replace("\u2018", "'")
     norm = norm.replace("\u201c", '"').replace("\u201d", '"')
     norm = norm.replace("\u00a0", " ")
+    # Rimuovi backslash di escape inseriti da markdownify (es. PRU\_ICSSG -> PRU_ICSSG)
+    norm = re.sub(r"\\([_*`])", r"\1", norm)
     norm = re.sub(r"[*_`]+", "", norm)
     norm = re.sub(r"^\d+(?:\.\d+)*\s+", "", norm)
     norm = re.sub(r"\s+", " ", norm)
@@ -776,7 +837,7 @@ def _normalize_title_for_toc(title: str) -> str:
 def _scan_markdown_for_toc_entries(md_text: str) -> List[Tuple[str, int, str, str]]:
     lines = md_text.splitlines()
     toc_sequence: List[Tuple[str, int, str, str]] = []
-    heading_re = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
+    heading_re = re.compile(r"^(?P<hashes>#{1,6})\s+(?P<title>.+?)\s*$")
     image_re = re.compile(r"!\[[^\]]*\]\(\s*assets/[^)]+\)")
     table_re = re.compile(r"\(\s*tables/[^)]+\)")
 
@@ -784,15 +845,19 @@ def _scan_markdown_for_toc_entries(md_text: str) -> List[Tuple[str, int, str, st
         line = raw.rstrip()
         heading = heading_re.match(line)
         if heading:
-            level = len(heading.group(1))
-            title_raw = heading.group(2).strip()
-            title_display = re.sub(r"[*_`]+", "", title_raw).strip()
-            title_clean = re.sub(r"[*_`]+", "", title_raw).strip()
-            title_clean = re.sub(r"^\d+(?:\.\d+)*\s+", "", title_clean).strip()
+            level = len(heading.group("hashes"))
+            title_raw = heading.group("title").strip()
+            if not title_raw:
+                continue
+
+            if _normalize_title_for_toc(title_raw).lower() in {"indice", "toc", "html toc"}:
+                continue
+
+            unescaped = re.sub(r"\\([_*`])", r"\1", title_raw)
+            title_display = re.sub(r"[*_`]+", "", unescaped).strip()
             if not title_display:
                 continue
-            if title_clean.lower() in {"indice", "toc", "html toc"}:
-                continue
+
             toc_sequence.append(("heading", level, title_display, ""))
             continue
         if image_re.search(line):
@@ -839,19 +904,25 @@ def normalize_markdown_headings(md_text: str, toc_headings: List[Tuple[Any, ...]
         normalized_toc.append((level, title, anchor))
 
     search_pos = 0
+    heading_re = re.compile(r"^(?P<prefix>\s*)#{1,6}\s+(?P<title>.+?)\s*$")
     for level, title, _ in normalized_toc:
         target = _normalize_title_for_toc(title)
         for idx in range(search_pos, len(lines)):
             stripped = lines[idx].strip()
             if not stripped or stripped.startswith("<!--"):
                 continue
-            candidate = re.sub(r"^#{1,6}\s*", "", stripped).strip()
-            candidate = re.sub(r"[*_`]+", "", candidate).strip()
-            candidate = re.sub(r"^\d+(?:\.\d+)*\s+", "", candidate).strip()
-            if not candidate:
+
+            heading = heading_re.match(lines[idx])
+            if not heading:
                 continue
-            if _normalize_title_for_toc(candidate) == target:
-                heading_line = f"{'#' * max(1, min(level, 6))} {title}"
+
+            candidate_raw = heading.group("title").strip()
+            if not candidate_raw:
+                continue
+
+            if _normalize_title_for_toc(candidate_raw) == target:
+                prefix = heading.group("prefix")
+                heading_line = f"{prefix}{'#' * max(1, min(level, 6))} {title}"
                 lines[idx] = heading_line
                 search_pos = idx + 1
                 break
@@ -1136,6 +1207,7 @@ def build_manifest_from_outputs(
     toc_raw: Optional[List[List[Any]]] = None,
     manifest_tables: Optional[List[Dict[str, Any]]] = None,
     image_source: Optional[Dict[str, str]] = None,
+    md_text: Optional[str] = None,
 ) -> Tuple[Dict[str, Any], List[Dict[str, Any]], List[Dict[str, Any]]]:
     current_manifest: Dict[str, Any] = {}
     tables: List[Dict[str, Any]] = list(manifest_tables or current_manifest.get("tables") or [])
@@ -1143,15 +1215,26 @@ def build_manifest_from_outputs(
     toc_path_local = toc_path or md_path.with_suffix(".toc")
 
     try:
-        md_text_for_tables = md_path.read_text(encoding="utf-8")
+        md_text_for_manifest = md_text if md_text is not None else md_path.read_text(encoding="utf-8")
     except Exception:
-        md_text_for_tables = ""
-    table_ref_re = re.compile(r"tables/([^)\s]+?)(?:\\.|\)|\s)")
-    referenced_table_stems: Set[str] = set()
-    for match in table_ref_re.finditer(md_text_for_tables):
+        md_text_for_manifest = ""
+
+    table_ref_re = re.compile(r"tables/([^\)\s]+?)(?:\\.|\)|\s)")
+    referenced_table_stems_order: List[str] = []
+    seen_table_stems: Set[str] = set()
+    for match in table_ref_re.finditer(md_text_for_manifest):
         stem = Path(match.group(1)).stem
-        if stem:
-            referenced_table_stems.add(stem)
+        if stem and stem not in seen_table_stems:
+            referenced_table_stems_order.append(stem)
+            seen_table_stems.add(stem)
+
+    referenced_images_order_raw = extract_image_basenames_in_order(md_text_for_manifest)
+    referenced_images_order: List[str] = []
+    seen_images: Set[str] = set()
+    for base in referenced_images_order_raw:
+        if base and base not in seen_images:
+            referenced_images_order.append(base)
+            seen_images.add(base)
 
     if toc_root_local is None:
         if toc_raw is not None:
@@ -1169,17 +1252,18 @@ def build_manifest_from_outputs(
         for f in entry.get("files", []):
             existing_table_stems.add(Path(f).stem)
 
-    if tables_dir.exists():
+    if tables_dir.exists() and referenced_table_stems_order:
         grouped_tables: Dict[str, List[Path]] = {}
-        for path in tables_dir.iterdir():
+        for path in sorted(tables_dir.iterdir(), key=lambda p: p.name):
             if not path.is_file():
                 continue
             grouped_tables.setdefault(path.stem, []).append(path)
 
-        for stem, files in grouped_tables.items():
+        for stem in referenced_table_stems_order:
             if stem in existing_table_stems:
                 continue
-            if referenced_table_stems and stem not in referenced_table_stems:
+            files = grouped_tables.get(stem)
+            if not files:
                 continue
             page_for_table = guess_page_from_filename(stem)
             table_names = [p.name for p in files]
@@ -1187,7 +1271,6 @@ def build_manifest_from_outputs(
             title = context_path[-1] if context_path else ""
             tables.append(
                 {
-                    "pdf_source_page": page_for_table,
                     "title": title,
                     "context": context_str,
                     "context_path": context_path,
@@ -1202,33 +1285,34 @@ def build_manifest_from_outputs(
         if base:
             old_images_by_base[base] = entry
 
+    assets_by_base: Dict[str, Path] = {}
     if assets_dir.exists():
         for path in sorted(p for p in assets_dir.rglob("*") if p.is_file()):
-            base_name = path.name
-            previous = old_images_by_base.get(base_name, {})
-            page_for_img: Optional[int] = None
-            if page_for_img is None:
-                page_for_img = previous.get("pdf_source_page")
-            if page_for_img is None:
-                guessed = guess_page_from_filename(base_name)
-                page_for_img = guessed if guessed is not None else None
+            assets_by_base.setdefault(path.name, path)
 
-            context_path, context_str = find_context(toc_path_local, toc_root_local, [base_name], page_for_img)
-            title = context_path[-1] if context_path else ""
+    for base_name in referenced_images_order:
+        path = assets_by_base.get(base_name, assets_dir / base_name)
+        previous = old_images_by_base.get(base_name, {})
+        page_for_img: Optional[int] = previous.get("pdf_source_page")
+        if page_for_img is None:
+            guessed = guess_page_from_filename(base_name)
+            page_for_img = guessed if guessed is not None else None
 
-            manifest_images.append(
-                {
-                    "file": relative_to_output(path, out_dir),
-                    "pdf_source_page": page_for_img,
-                    "title": title,
-                    "context": context_str,
-                    "context_path": context_path,
-                    "source": previous.get("source") or (image_source or {}).get(base_name) or "html",
-                    "type": previous.get("type", "image"),
-                    **({"equation": previous["equation"]} if "equation" in previous else {}),
-                    **({"annotation": previous["annotation"]} if "annotation" in previous else {}),
-                }
-            )
+        context_path, context_str = find_context(toc_path_local, toc_root_local, [base_name], page_for_img)
+        title = context_path[-1] if context_path else ""
+
+        manifest_images.append(
+            {
+                "file": relative_to_output(path, out_dir),
+                "title": title,
+                "context": context_str,
+                "context_path": context_path,
+                "source": previous.get("source") or (image_source or {}).get(base_name) or "html",
+                "type": previous.get("type", "image"),
+                **({"equation": previous["equation"]} if "equation" in previous else {}),
+                **({"annotation": previous["annotation"]} if "annotation" in previous else {}),
+            }
+        )
 
     manifest = {
         "source_html": source_path.name,
@@ -1241,30 +1325,71 @@ def build_manifest_from_outputs(
 
 
 def generate_item_ids(manifest: Dict[str, Any]) -> Dict[str, Any]:
-    toc_counter = 1
+    used_ids: Set[str] = set()
 
-    def _assign_toc_ids(nodes: List[Dict[str, Any]]) -> None:
-        nonlocal toc_counter
-        for node in nodes:
-            node["id"] = node.get("id") or f"toc-{toc_counter}"
-            toc_counter += 1
-            children = node.get("children") or []
-            node["children"] = children
-            _assign_toc_ids(children)
+    def _reserve(existing: Optional[str]) -> Optional[str]:
+        if existing:
+            used_ids.add(existing)
+        return existing
+
+    def _stable_id(prefix: str, key: str) -> str:
+        digest = hashlib.sha1(key.encode("utf-8")).hexdigest()
+        for length in (12, 16, 20, 32, 40):
+            candidate = f"{prefix}-{digest[:length]}"
+            if candidate not in used_ids:
+                used_ids.add(candidate)
+                return candidate
+        suffix = 1
+        base = f"{prefix}-{digest}"
+        candidate = base
+        while candidate in used_ids:
+            suffix += 1
+            candidate = f"{base}-{suffix}"
+        used_ids.add(candidate)
+        return candidate
 
     markdown_section = manifest.get("markdown") or {}
     toc_tree = markdown_section.get("toc_tree") or []
-    _assign_toc_ids(toc_tree)
 
-    table_counter = 1
+    def _assign_toc_ids(nodes: List[Dict[str, Any]], ancestors: List[str]) -> None:
+        for index, node in enumerate(nodes, start=1):
+            children = node.get("children") or []
+            node["children"] = children
+
+            existing = _reserve(node.get("id"))
+            if existing:
+                _assign_toc_ids(children, ancestors + [str(node.get("title") or "").strip()])
+                continue
+
+            title = str(node.get("title") or "").strip()
+            anchor = str(node.get("anchor") or "").strip()
+            path = [item for item in ancestors + [title] if item]
+            normalized_path = " > ".join(_normalize_title_for_toc(part) for part in path if part)
+            key = normalized_path or title or f"toc-node-{index}"
+            if anchor:
+                key = f"{key}#{anchor}"
+            key = f"{key}|{index}"
+
+            node["id"] = _stable_id("toc", key)
+            _assign_toc_ids(children, path)
+
+    _assign_toc_ids(toc_tree, [])
+
     for table in manifest.get("tables") or []:
-        table["id"] = table.get("id") or f"table-{table_counter}"
-        table_counter += 1
+        existing = _reserve(table.get("id"))
+        if existing:
+            continue
+        files = [str(item) for item in (table.get("files") or []) if item]
+        key = "|".join(sorted(files)) or json.dumps(table, sort_keys=True, ensure_ascii=False)
+        table["id"] = _stable_id("table", key)
 
-    image_counter = 1
     for image in manifest.get("images") or []:
-        image["id"] = image.get("id") or f"img-{image_counter}"
-        image_counter += 1
+        existing = _reserve(image.get("id"))
+        if existing:
+            continue
+        file_rel = str(image.get("file") or "")
+        key = file_rel or json.dumps(image, sort_keys=True, ensure_ascii=False)
+        image["id"] = _stable_id("img", key)
 
     return manifest
 
@@ -1470,25 +1595,7 @@ def populate_images(manifest: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def cleanup_manifest(manifest: Dict[str, Any], keep_pdf_pages_ref: bool) -> Dict[str, Any]:
-    if keep_pdf_pages_ref:
-        return manifest
-
-    markdown = manifest.get("markdown") or {}
-    toc_nodes = markdown.get("toc_tree") or []
-
-    def _strip_pdf_page(nodes: List[Dict[str, Any]]) -> None:
-        for node in nodes:
-            node.pop("pdf_source_page", None)
-            _strip_pdf_page(node.get("children") or [])
-
-    _strip_pdf_page(toc_nodes)
-
-    for table in manifest.get("tables") or []:
-        table.pop("pdf_source_page", None)
-
-    for image in manifest.get("images") or []:
-        image.pop("pdf_source_page", None)
-
+    # pdf_source_page handling removed; manifest already omits page refs
     return manifest
 
 
@@ -1689,7 +1796,8 @@ def set_images_lines(manifest: Dict[str, Any], md_text: str) -> Dict[str, Any]:
                 candidates.append(idx)
                 continue
             for match in IMG_LINK_RE.finditer(raw):
-                url = normalize_path_for_md(match.group(2).strip().strip('"').strip("'"))
+                url_part, _ = _split_markdown_link(match.group(2))
+                url = normalize_path_for_md(url_part)
                 if url.split("/")[-1] == base:
                     candidates.append(idx)
                     break
@@ -1747,7 +1855,8 @@ def embed_equations_in_markdown(md_text: str, formulas_by_base: Dict[str, str]) 
         formula_match = None
         formula_base = ""
         for match in matches:
-            url = normalize_path_for_md(match.group(2).strip().strip('"').strip("'"))
+            url_part, _ = _split_markdown_link(match.group(2))
+            url = normalize_path_for_md(url_part)
             base = url.split("/")[-1]
             if base in formulas_by_base:
                 formula_match = match
@@ -1834,7 +1943,8 @@ def embed_annotations_in_markdown(md_text: str, annotations: Dict[str, str]) -> 
         output.append(line)
         matches = list(IMG_LINK_RE.finditer(line))
         for match in matches:
-            url = normalize_path_for_md(match.group(2).strip().strip('"').strip("'"))
+            url_part, _ = _split_markdown_link(match.group(2))
+            url = normalize_path_for_md(url_part)
             base = url.split("/")[-1]
             if base not in annotations:
                 continue
@@ -1863,7 +1973,8 @@ def _strip_image_links_from_line(line: str, basenames: Set[str]) -> Tuple[str, b
     removed = False
     for match in IMG_LINK_RE.finditer(line):
         result_parts.append(line[last_index : match.start()])
-        url = normalize_path_for_md(match.group(2).strip().strip('"').strip("'"))
+        url_part, _ = _split_markdown_link(match.group(2))
+        url = normalize_path_for_md(url_part)
         url = url.split("?", 1)[0].split("#", 1)[0]
         base = url.split("/")[-1]
         if base in basenames:
@@ -2002,6 +2113,26 @@ def remove_small_images_phase(
 def _guess_mime_type(path: Path) -> str:
     mime, _ = mimetypes.guess_type(path.name)
     return mime or "application/octet-stream"
+
+
+def _is_svg_mime(mime: str) -> bool:
+    return mime in {"image/svg+xml", "image/svg"}
+
+
+def _convert_svg_to_png(svg_path: Path, png_path: Path) -> None:
+    try:
+        import cairosvg  # type: ignore
+    except Exception as exc:
+        raise RuntimeError(f"cairosvg not available for SVG conversion: {exc}") from exc
+
+    if not svg_path.exists():
+        raise RuntimeError(f"SVG file not found: {svg_path}")
+
+    png_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        cairosvg.svg2png(url=svg_path.as_uri(), write_to=str(png_path))
+    except Exception as exc:
+        raise RuntimeError(f"Failed to convert SVG {svg_path} to PNG: {exc}") from exc
 
 
 def _build_gemini_parts(prompt: str, mime_type: str, image_bytes: bytes) -> List[Dict[str, Any]]:
@@ -2230,19 +2361,28 @@ def run_annotation_phase(
                 annotation_final = _get_test_annotation_text(is_equation, entry.get("equation"))
             else:
                 prompt = select_annotation_prompt(is_equation, pix2tex_executed, config)
-                try:
-                    image_bytes = path.read_bytes()
-                except Exception as exc:
-                    raise RuntimeError(f"Unable to read image {path}: {exc}") from exc
 
-                mime_type = _guess_mime_type(path)
+                mime_type_original = _guess_mime_type(path)
+                is_svg = _is_svg_mime(mime_type_original)
+                send_path = path
+                if is_svg:
+                    png_path = path.with_suffix(".png")
+                    if not png_path.exists():
+                        _convert_svg_to_png(path, png_path)
+                    send_path = png_path
+                try:
+                    image_bytes = send_path.read_bytes()
+                except Exception as exc:
+                    raise RuntimeError(f"Unable to read image {send_path}: {exc}") from exc
+
+                mime_type = "image/png" if is_svg else mime_type_original
                 parts = _build_gemini_parts(prompt, mime_type, image_bytes)
                 try:
                     model_response = model.generate_content(parts)
                 except Exception as exc:
                     if config.debug:
-                        LOG.debug("Gemini request failed for %s", path.name, exc_info=exc)
-                    raise RuntimeError(f"Gemini request failed for {path.name}: {exc}") from exc
+                        LOG.debug("Gemini request failed for %s", send_path.name, exc_info=exc)
+                    raise RuntimeError(f"Gemini request failed for {send_path.name}: {exc}") from exc
 
                 if config.debug:
                     LOG.debug("Gemini raw response for %s: %r", path.name, model_response)
@@ -2327,6 +2467,7 @@ def convert_html_to_markdown(document_path: Path, verbose: bool = False) -> Tupl
         LOG.info("Converting HTML to Markdown via markdownify")
 
     md_text = md_convert(html_str, heading_style="ATX")
+    md_text = sanitize_image_links(md_text)
     md_text = replace_table_placeholders(md_text, tables)
     md_text = rewrite_image_links_to_assets_subdir(md_text, subdir="assets")
     return md_text, tables
@@ -2345,6 +2486,7 @@ def run_processing_pipeline(
     from_dir: Path,
     out_dir: Path,
     post_processing_cfg: PostProcessingConfig,
+    generate_post_artifacts: bool = True,
 ) -> Tuple[str, Path, Path]:
     if not out_dir.exists():
         out_dir.mkdir(parents=True, exist_ok=False)
@@ -2361,6 +2503,14 @@ def run_processing_pipeline(
         raise RuntimeError(f"toc.html not found in {from_dir}")
     if not assets_source.exists():
         raise RuntimeError(f"assets directory not found in {from_dir}")
+
+    toc_out = out_dir / "toc.html"
+    try:
+        shutil.copyfile(toc_path, toc_out)
+    except Exception as exc:
+        raise RuntimeError(f"Unable to copy toc.html to output directory: {exc}") from exc
+    if post_processing_cfg.verbose:
+        LOG.info("Copied TOC: %s -> %s", toc_path, toc_out)
 
     md_text, tables = convert_html_to_markdown(document_path, verbose=post_processing_cfg.verbose)
 
@@ -2379,23 +2529,25 @@ def run_processing_pipeline(
 
     copy_assets_dir(assets_source, assets_dir, verbose=post_processing_cfg.verbose)
 
-    toc_entries, toc_root = parse_html_toc(toc_path)
-    toc_md_path, _ = generate_markdown_toc_file(md_text, md_out, out_dir)
-    image_bases = extract_image_basenames_from_markdown(md_text)
-    image_source = {name: "html" for name in image_bases}
+    if generate_post_artifacts:
+        toc_entries, toc_root = parse_html_toc(toc_path)
+        toc_md_path, _ = generate_markdown_toc_file(md_text, md_out, out_dir)
+        image_bases = extract_image_basenames_from_markdown(md_text)
+        image_source = {name: "html" for name in image_bases}
 
-    manifest, _, _ = build_manifest_from_outputs(
-        source_path=document_path,
-        md_path=md_out,
-        out_dir=out_dir,
-        assets_dir=assets_dir,
-        tables_dir=tables_dir,
-        toc_path=toc_md_path,
-        toc_root=toc_root,
-        toc_raw=toc_entries,
-        image_source=image_source,
-    )
-    safe_write_text(manifest_out, json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
+        manifest, _, _ = build_manifest_from_outputs(
+            source_path=document_path,
+            md_path=md_out,
+            out_dir=out_dir,
+            assets_dir=assets_dir,
+            tables_dir=tables_dir,
+            toc_path=toc_md_path,
+            toc_root=toc_root,
+            toc_raw=toc_entries,
+            image_source=image_source,
+            md_text=md_text,
+        )
+        safe_write_text(manifest_out, json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
 
     backup_path = md_out.with_suffix(md_out.suffix + ".processing.md")
     shutil.copyfile(md_out, backup_path)
@@ -2429,9 +2581,17 @@ def run_post_processing_pipeline(
     except Exception as exc:
         raise RuntimeError(f"Unable to restore Markdown from backup {backup_path}: {exc}") from exc
 
-    toc_path_source = from_dir / "toc.html"
+    toc_path_source = out_dir / "toc.html"
     if not toc_path_source.exists():
-        raise RuntimeError(f"toc.html not found in {from_dir}")
+        toc_path_fallback = from_dir / "toc.html"
+        if not toc_path_fallback.exists():
+            raise RuntimeError(f"toc.html not found in {from_dir}")
+        try:
+            shutil.copyfile(toc_path_fallback, toc_path_source)
+        except Exception as exc:
+            raise RuntimeError(f"Unable to copy toc.html to output directory: {exc}") from exc
+        if config.verbose:
+            LOG.info("Copied TOC: %s -> %s", toc_path_fallback, toc_path_source)
 
     normalized_md_text, toc_headings, toc_raw, toc_md_path, toc_headings_full = normalize_markdown_file(
         toc_path_source, md_path, out_dir, add_toc=not config.disable_toc
@@ -2456,6 +2616,7 @@ def run_post_processing_pipeline(
         toc_path=toc_md_path,
         toc_root=build_toc_tree(toc_raw),
         toc_raw=toc_raw,
+        md_text=normalized_md_text,
     )
 
     safe_write_text(manifest_path, json.dumps(manifest_built, ensure_ascii=False, indent=2) + "\n")
